@@ -1148,6 +1148,7 @@ tbody td{padding:.6rem 1rem;font-size:13px;max-width:200px;overflow:hidden;text-
       </div>
     </div>
     <div class="modal-actions">
+      <button id="cf-btn-excluir" class="btn btn-secondary" style="display:none;color:#a33;border-color:#a33;margin-right:auto;" onclick="excluirColab()"><i class="ti ti-trash"></i> Excluir</button>
       <button class="btn btn-secondary" onclick="document.getElementById('modal-colab-form').style.display='none'">Cancelar</button>
       <button class="btn btn-primary" onclick="salvarColab()"><i class="ti ti-device-floppy"></i> Salvar</button>
     </div>
@@ -1852,16 +1853,38 @@ function abrirModalColab(id) {
     document.getElementById('cf-depto').value = c.depto || '';
     document.getElementById('cf-empresa').value = c.empresa || 'RAGUIFE';
     document.getElementById('cf-status').value = c.status || 'Ativo';
-    if (c.admissao) {
-      const [d,m,y] = c.admissao.split('/');
-      document.getElementById('cf-admissao').value = `${y}-${m}-${d}`;
-    }
+    document.getElementById('cf-cpf').value = c.cpf || '';
+    const _toIso = v => { const m = String(v||'').match(/^(\d{2})\/(\d{2})\/(\d{4})$/); return m ? `${m[3]}-${m[2]}-${m[1]}` : ''; };
+    document.getElementById('cf-admissao').value = _toIso(c.admissao);
+    document.getElementById('cf-nasc').value = _toIso(c.nascimento);
   } else {
-    ['cf-chapa','cf-nome','cf-cargo','cf-depto','cf-admissao'].forEach(id => { document.getElementById(id).value = ''; });
+    ['cf-chapa','cf-nome','cf-cpf','cf-nasc','cf-cargo','cf-depto','cf-admissao'].forEach(id => { document.getElementById(id).value = ''; });
     document.getElementById('cf-empresa').value = 'RAGUIFE';
     document.getElementById('cf-status').value = 'Ativo';
   }
+  document.getElementById('cf-btn-excluir').style.display = id ? 'inline-flex' : 'none';
   document.getElementById('modal-colab-form').style.display = 'flex';
+}
+
+async function excluirColab() {
+  const id = _editColabId;
+  const c = STATE.colaboradores.find(x => x.id === id);
+  if (!c) return;
+  const nA = STATE.avaliacoes.filter(a => a.colabId === id).length;
+  const nC = STATE.contatos.filter(x => x.colabId === id).length;
+  let eds = [];
+  try { eds = await carregarEntrevistasED(true) || []; } catch(e) {}
+  const nE = eds.filter(e => e.colabId === id).length;
+  if (nA || nC || nE) {
+    alert('Não é possível excluir ' + c.nome + ': há ' + nA + ' avaliação(ões), ' + nC + ' contato(s) e ' + nE + ' entrevista(s) ligados a este registro.\n\nSe for duplicado, use o botão Duplicados para mesclar. Se não, marque como Inativo.');
+    return;
+  }
+  if (!confirm('Excluir DEFINITIVAMENTE ' + c.nome + ' (chapa ' + (c.chapa||'—') + ')?\nEste registro não tem avaliações, contatos nem entrevistas. Não dá para desfazer.')) return;
+  STATE.colaboradores = STATE.colaboradores.filter(x => x.id !== id);
+  await salvarState();
+  document.getElementById('modal-colab-form').style.display = 'none';
+  renderColabTable();
+  atualizarDashboard();
 }
 
 function salvarColab() {
