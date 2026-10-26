@@ -1430,6 +1430,58 @@ function _normNome(s) {
   return String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/\s+/g,' ').trim().toUpperCase();
 }
 
+function _soDigitos(s) { return String(s||'').replace(/\D/g,''); }
+function _cpfValido(c) { return _soDigitos(c.cpf).length === 11; }
+function _statusEhData(s) { return /^\d{2}\/\d{2}\/\d{4}$/.test(String(s||'').trim()); }
+
+// Acha colaborador existente: chapa (atual ou anterior) -> CPF válido -> nome único
+function acharColab(chapa, cpf, nome) {
+  const cs = STATE.colaboradores;
+  let r = cs.find(c => c.chapa === chapa || (c.chapasAnteriores||[]).includes(chapa));
+  if (r) return r;
+  const d = _soDigitos(cpf);
+  if (d.length === 11) { r = cs.find(c => _soDigitos(c.cpf) === d); if (r) return r; }
+  const n = _normNome(nome);
+  if (n) { const m = cs.filter(c => _normNome(c.nome) === n); if (m.length === 1) return m[0]; }
+  return null;
+}
+
+function _analisarDuplicados(eds) {
+  const grupos = {};
+  STATE.colaboradores.forEach(c => {
+    const k = _normNome(c.nome);
+    if (k) (grupos[k] = grupos[k] || []).push(c);
+  });
+  const info = c => ({
+    c,
+    nA: STATE.avaliacoes.filter(a => a.colabId === c.id).length,
+    nC: STATE.contatos.filter(x => x.colabId === c.id).length,
+    nE: eds.filter(e => e.colabId === c.id).length,
+  });
+  const seguros = [], revisar = [];
+  Object.values(grupos).filter(g => g.length > 1)
+    .sort((a,b) => _normNome(a[0].nome).localeCompare(_normNome(b[0].nome)))
+    .forEach(g => {
+      const is = g.map(info);
+      if (g.length === 2) {
+        const comCpf = is.filter(i => _cpfValido(i.c));
+        const sem = is.filter(i => !_soDigitos(i.c.cpf));
+        const mesmoDepto = _normNome(g[0].depto) === _normNome(g[1].depto);
+        if (comCpf.length === 1 && sem.length === 1 && mesmoDepto) {
+          seguros.push({ manter: comCpf[0], remover: sem[0] });
+          return;
+        }
+        let motivo = 'CPF fora do padrão (não tem 11 dígitos) ou ausente nos dois';
+        if (comCpf.length === 1 && sem.length === 1 && !mesmoDepto) motivo = 'Setores diferentes';
+        else if (comCpf.length === 2) motivo = 'Os dois têm CPF';
+        revisar.push({ is, motivo });
+      } else {
+        revisar.push({ is, motivo: 'Mais de 2 registros com o mesmo nome' });
+      }
+    });
+  return { seguros, revisar, total: Object.values(grupos).filter(g => g.length > 1).length };
+}
+
 async function abrirRelatorioDuplicados() {
   const modal = document.getElementById('modal-duplicados');
   const box = document.getElementById('dup-conteudo');
@@ -1437,46 +1489,110 @@ async function abrirRelatorioDuplicados() {
   box.innerHTML = 'Carregando...';
   let eds = [];
   try { eds = await carregarEntrevistasED(true) || []; } catch(e) {}
+  const an = _analisarDuplicados(eds);
+  window._dupAnalise = an;
+  window._dupEds = eds;
 
-  const grupos = {};
-  STATE.colaboradores.forEach(c => {
-    const k = _normNome(c.nome);
-    if (!k) return;
-    (grupos[k] = grupos[k] || []).push(c);
-  });
-  const dups = Object.values(grupos).filter(g => g.length > 1)
-    .sort((a,b) => _normNome(a[0].nome).localeCompare(_normNome(b[0].nome)));
-
-  if (!dups.length) {
+  if (!an.total) {
     box.innerHTML = '<p>Nenhum nome duplicado encontrado entre ' + STATE.colaboradores.length + ' colaboradores.</p>';
     return;
   }
-  const totalRegs = dups.reduce((s,g) => s + g.length, 0);
-  let html = '<p><strong>' + dups.length + '</strong> pessoas com registro repetido (' + totalRegs + ' registros no total, de ' + STATE.colaboradores.length + '). Nada foi alterado.</p>';
-  html += '<table style="width:100%;font-size:12px;border-collapse:collapse;">' +
-    '<thead><tr style="text-align:left;border-bottom:1px solid var(--copper-border);">' +
-    '<th>Nome</th><th>Chapa</th><th>CPF</th><th>Depto</th><th>Empresa</th><th>Status</th><th>Aval.</th><th>Contatos</th><th>Entrev.</th></tr></thead><tbody>';
-  dups.forEach(g => {
-    g.forEach((c, i) => {
-      const nA = STATE.avaliacoes.filter(a => a.colabId === c.id).length;
-      const nC = STATE.contatos.filter(x => x.colabId === c.id).length;
-      const nE = eds.filter(e => e.colabId === c.id).length;
-      html += '<tr style="' + (i===0 ? 'border-top:2px solid var(--copper-border);' : '') + '">' +
-        '<td>' + (i===0 ? '<strong>' + c.nome + '</strong>' : '') + '</td>' +
-        '<td>' + (c.chapa||'—') + '</td><td>' + (c.cpf||'<span style="color:#b00">sem CPF</span>') + '</td>' +
-        '<td>' + (c.depto||'—') + '</td><td>' + (c.empresa||'—') + '</td><td>' + (c.status||'—') + '</td>' +
-        '<td>' + nA + '</td><td>' + nC + '</td><td>' + nE + '</td></tr>';
-    });
+  const cel = i => '<strong>' + i.c.chapa + '</strong> · ' + (i.c.cpf || '<span style="color:#b00">sem CPF</span>') +
+    '<br><span style="color:var(--text-soft)">' + i.nA + ' aval · ' + i.nC + ' contatos · ' + i.nE + ' entrev.</span>';
+  let html = '<p><strong>' + an.total + '</strong> pessoas com nome repetido: <strong>' + an.seguros.length +
+    '</strong> podem ser mescladas com segurança e <strong>' + an.revisar.length + '</strong> precisam de revisão manual.</p>';
+
+  html += '<div style="margin:.5rem 0 1rem;display:flex;gap:.5rem;flex-wrap:wrap;">' +
+    '<button class="btn btn-secondary btn-sm" onclick="baixarBackupAntesMesclar()"><i class="ti ti-download"></i> 1) Baixar backup</button>' +
+    '<button class="btn btn-primary btn-sm" onclick="mesclarTodosSeguros()"><i class="ti ti-arrows-join"></i> 2) Mesclar os ' + an.seguros.length + ' seguros</button></div>';
+  html += '<p style="font-size:12px;color:var(--text-soft)">Regra: mantém o registro com CPF, move avaliações, contatos e entrevistas para ele, guarda a chapa antiga como alias e remove o duplicado sem CPF. Só entram aqui pares com mesmo setor, um com CPF válido e o outro sem CPF.</p>';
+
+  html += '<h3 style="margin:1rem 0 .4rem;">Mesclagem segura (' + an.seguros.length + ')</h3>';
+  html += '<table style="width:100%;font-size:12px;border-collapse:collapse;"><thead><tr style="text-align:left;border-bottom:1px solid var(--copper-border);"><th>Nome</th><th>Manter</th><th>Remover</th><th></th></tr></thead><tbody>';
+  an.seguros.forEach((s, idx) => {
+    html += '<tr style="border-top:1px solid var(--copper-border);"><td><strong>' + s.manter.c.nome + '</strong><br>' + (s.manter.c.depto||'') + '</td><td>' + cel(s.manter) + '</td><td>' + cel(s.remover) + '</td>' +
+      '<td><button class="btn btn-secondary btn-sm" onclick="mesclarUmDuplicado(' + idx + ')">Mesclar</button></td></tr>';
   });
   html += '</tbody></table>';
+
+  if (an.revisar.length) {
+    html += '<h3 style="margin:1.25rem 0 .4rem;">Revisar manualmente (' + an.revisar.length + ')</h3>';
+    html += '<table style="width:100%;font-size:12px;border-collapse:collapse;"><thead><tr style="text-align:left;border-bottom:1px solid var(--copper-border);"><th>Nome</th><th>Motivo</th><th>Registros</th></tr></thead><tbody>';
+    an.revisar.forEach(r => {
+      html += '<tr style="border-top:1px solid var(--copper-border);"><td><strong>' + r.is[0].c.nome + '</strong></td><td>' + r.motivo + '</td><td>' +
+        r.is.map(i => cel(i) + ' · ' + (i.c.depto||'—') + ' · ' + (i.c.status||'—')).join('<hr style="border:0;border-top:1px dashed var(--copper-border);margin:4px 0;">') + '</td></tr>';
+    });
+    html += '</tbody></table>';
+  }
   box.innerHTML = html;
+}
+
+async function baixarBackupAntesMesclar() {
+  const eds = window._dupEds || await carregarEntrevistasED(true) || [];
+  const dados = { geradoEm: new Date().toISOString(), colaboradores: STATE.colaboradores, avaliacoes: STATE.avaliacoes, contatos: STATE.contatos, entrevistas_desligamento: eds };
+  const blob = new Blob([JSON.stringify(dados)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'backup-psicossocial-' + new Date().toISOString().slice(0,10) + '.json';
+  document.body.appendChild(a); a.click(); a.remove();
+  window._dupBackupFeito = true;
+}
+
+async function _mesclarPar(manter, remover) {
+  // 1) entrevistas de desligamento (Firebase) primeiro: se falhar, nada local muda
+  const edsDoRemover = (window._dupEds || []).filter(e => e.colabId === remover.id);
+  if (edsDoRemover.length) {
+    await _loadFbDb();
+    for (const e of edsDoRemover) {
+      await _fbSet(_fbRef(_fbDb, 'entrevistas_desligamento/' + e.id + '/colabId'), manter.id);
+      e.colabId = manter.id;
+    }
+    _entrevistasED = null;
+  }
+  // 2) dados locais
+  STATE.avaliacoes.forEach(a => { if (a.colabId === remover.id) a.colabId = manter.id; });
+  STATE.contatos.forEach(c => { if (c.colabId === remover.id) c.colabId = manter.id; });
+  ['cargo','depto','empresa','nascimento','admissao'].forEach(f => { if (!manter[f] && remover[f]) manter[f] = remover[f]; });
+  if (!manter.admissao && _statusEhData(remover.status)) manter.admissao = remover.status;
+  manter.chapasAnteriores = Array.from(new Set([...(manter.chapasAnteriores||[]), ...(remover.chapasAnteriores||[]), remover.chapa].filter(Boolean)));
+  STATE.colaboradores = STATE.colaboradores.filter(c => c.id !== remover.id);
+}
+
+async function _finalizarMesclagem() {
+  await salvarState();
+  renderColabTable();
+  atualizarDashboard();
+  await abrirRelatorioDuplicados();
+}
+
+async function mesclarUmDuplicado(idx) {
+  const s = (window._dupAnalise||{}).seguros && window._dupAnalise.seguros[idx];
+  if (!s) return;
+  if (!window._dupBackupFeito && !confirm('Você ainda não baixou o backup. Mesclar mesmo assim?')) return;
+  try { await _mesclarPar(s.manter.c, s.remover.c); }
+  catch(e) { alert('Erro ao mesclar: ' + e.message); return; }
+  await _finalizarMesclagem();
+}
+
+async function mesclarTodosSeguros() {
+  const seguros = (window._dupAnalise||{}).seguros || [];
+  if (!seguros.length) return;
+  if (!window._dupBackupFeito) { alert('Baixe o backup primeiro (botão 1).'); return; }
+  if (!confirm('Mesclar ' + seguros.length + ' pares? Os registros duplicados sem CPF serão removidos e seus dados movidos para o registro com CPF.')) return;
+  let ok = 0, falhas = [];
+  for (const s of seguros) {
+    try { await _mesclarPar(s.manter.c, s.remover.c); ok++; }
+    catch(e) { falhas.push(s.manter.c.nome + ': ' + e.message); }
+  }
+  await _finalizarMesclagem();
+  alert('Mesclagem concluída: ' + ok + ' pares.' + (falhas.length ? '\nFalhas (' + falhas.length + '):\n' + falhas.join('\n') : ''));
 }
 
 function importarColaboradores() {
   if (!confirm('Sincronizar lista base? Colaboradores existentes serao atualizados e novos adicionados. Historico mantido.')) return;
   let novos = 0, atualizados = 0;
   COLABORADORES_INICIAIS.forEach((c, i) => {
-    const existing = STATE.colaboradores.find(x => x.chapa === c.chapa);
+    const existing = acharColab(c.chapa, c.cpf, c.nome);
     if (existing) {
       if (c.nome)       existing.nome       = c.nome;
       if (c.cargo)      existing.cargo      = c.cargo;
@@ -4537,12 +4653,16 @@ function processarLinhas(rows, input) {
     if (!chapa || !nome || nome==='NOME') continue;
     const cargo      = String(row[2]||'').toUpperCase();
     const depto      = String(row[3]||'').toUpperCase();
-    const status     = String(row[4]||'Ativo').trim();
-    const admissao   = String(row[5]||'').trim();
-    const cpf        = String(row[7]||'').replace(/\D/g,'');
+    let status       = String(row[4]||'Ativo').trim();
+    let admissao     = String(row[5]||'').trim();
+    let cpf          = String(row[7]||'').replace(/\D/g,'');
+    // Colunas deslocadas: data ou CPF no lugar do status não é status
+    if (_statusEhData(status)) { if (!admissao) admissao = status; status = ''; }
+    else if (/^\d{11}$/.test(status.replace(/\D/g,'')) && status.replace(/\D/g,'').length === 11) { if (!cpf) cpf = status.replace(/\D/g,''); status = ''; }
+    if (cpf.length !== 11) cpf = '';
     const nascimento = String(row[8]||'').trim();
     const empresa    = empresaAtual;
-    const existing   = STATE.colaboradores.find(c => c.chapa === chapa);
+    const existing   = acharColab(chapa, cpf, nome);
     if (existing) {
       if (nome)       existing.nome = nome;
       if (cargo)      existing.cargo = cargo;
@@ -4554,7 +4674,7 @@ function processarLinhas(rows, input) {
       existing.empresa = empresa;
       atualizados++;
     } else {
-      STATE.colaboradores.push({id:gerarId(),chapa,nome,cargo,depto,status,admissao,cpf,nascimento,empresa});
+      STATE.colaboradores.push({id:gerarId(),chapa,nome,cargo,depto,status:status||'Ativo',admissao,cpf,nascimento,empresa});
       novos++;
     }
   }
