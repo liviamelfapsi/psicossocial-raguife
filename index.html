@@ -437,6 +437,7 @@ tbody td{padding:.6rem 1rem;font-size:13px;max-width:200px;overflow:hidden;text-
   <div class="page-header">
     <h1 class="section-title">Colaboradores</h1>
     <div style="display:flex;gap:.5rem;flex-wrap:wrap;">
+      <button class="btn btn-secondary btn-sm" onclick="abrirRelatorioDuplicados()"><i class="ti ti-copy"></i> Duplicados</button>
       <button class="btn btn-secondary btn-sm" onclick="importarColaboradores()"><i class="ti ti-refresh"></i> Reimportar lista base</button>
       <label class="btn btn-secondary btn-sm" style="cursor:pointer;"><i class="ti ti-file-upload"></i> Importar nova planilha <input type="file" accept=".xlsx,.csv" style="display:none" onchange="importarPlanilha(this)"></label>
       <button class="btn btn-primary" onclick="abrirModalColab()"><i class="ti ti-user-plus"></i> Novo colaborador</button>
@@ -1094,6 +1095,16 @@ tbody td{padding:.6rem 1rem;font-size:13px;max-width:200px;overflow:hidden;text-
 </div>
 
 <!-- Modal: Perfil do colaborador -->
+<div id="modal-duplicados" class="modal-overlay" style="display:none;" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal-box" style="max-width:900px;width:95%;max-height:90vh;overflow:auto;">
+    <div class="modal-title">Colaboradores duplicados (somente leitura)</div>
+    <div id="dup-conteudo">Carregando...</div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="document.getElementById('modal-duplicados').style.display='none'">Fechar</button>
+    </div>
+  </div>
+</div>
+
 <div id="modal-colab-perfil" class="modal-overlay" style="display:none;" onclick="if(event.target===this)this.style.display='none'">
   <div class="modal-box">
     <div class="modal-title" id="perfil-nome">Perfil do Colaborador</div>
@@ -1410,6 +1421,55 @@ function importarColaboradoresIniciais() {
     id: 'c_' + c.chapa + '_' + i,
   }));
   salvarState();
+}
+
+// ══════════════════════════════════════════
+//  RELATÓRIO DE DUPLICADOS (somente leitura)
+// ══════════════════════════════════════════
+function _normNome(s) {
+  return String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/\s+/g,' ').trim().toUpperCase();
+}
+
+async function abrirRelatorioDuplicados() {
+  const modal = document.getElementById('modal-duplicados');
+  const box = document.getElementById('dup-conteudo');
+  modal.style.display = 'flex';
+  box.innerHTML = 'Carregando...';
+  let eds = [];
+  try { eds = await carregarEntrevistasED(true) || []; } catch(e) {}
+
+  const grupos = {};
+  STATE.colaboradores.forEach(c => {
+    const k = _normNome(c.nome);
+    if (!k) return;
+    (grupos[k] = grupos[k] || []).push(c);
+  });
+  const dups = Object.values(grupos).filter(g => g.length > 1)
+    .sort((a,b) => _normNome(a[0].nome).localeCompare(_normNome(b[0].nome)));
+
+  if (!dups.length) {
+    box.innerHTML = '<p>Nenhum nome duplicado encontrado entre ' + STATE.colaboradores.length + ' colaboradores.</p>';
+    return;
+  }
+  const totalRegs = dups.reduce((s,g) => s + g.length, 0);
+  let html = '<p><strong>' + dups.length + '</strong> pessoas com registro repetido (' + totalRegs + ' registros no total, de ' + STATE.colaboradores.length + '). Nada foi alterado.</p>';
+  html += '<table style="width:100%;font-size:12px;border-collapse:collapse;">' +
+    '<thead><tr style="text-align:left;border-bottom:1px solid var(--copper-border);">' +
+    '<th>Nome</th><th>Chapa</th><th>CPF</th><th>Depto</th><th>Empresa</th><th>Status</th><th>Aval.</th><th>Contatos</th><th>Entrev.</th></tr></thead><tbody>';
+  dups.forEach(g => {
+    g.forEach((c, i) => {
+      const nA = STATE.avaliacoes.filter(a => a.colabId === c.id).length;
+      const nC = STATE.contatos.filter(x => x.colabId === c.id).length;
+      const nE = eds.filter(e => e.colabId === c.id).length;
+      html += '<tr style="' + (i===0 ? 'border-top:2px solid var(--copper-border);' : '') + '">' +
+        '<td>' + (i===0 ? '<strong>' + c.nome + '</strong>' : '') + '</td>' +
+        '<td>' + (c.chapa||'—') + '</td><td>' + (c.cpf||'<span style="color:#b00">sem CPF</span>') + '</td>' +
+        '<td>' + (c.depto||'—') + '</td><td>' + (c.empresa||'—') + '</td><td>' + (c.status||'—') + '</td>' +
+        '<td>' + nA + '</td><td>' + nC + '</td><td>' + nE + '</td></tr>';
+    });
+  });
+  html += '</tbody></table>';
+  box.innerHTML = html;
 }
 
 function importarColaboradores() {
